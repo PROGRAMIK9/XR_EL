@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Irrigation Digital Twin</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #121212; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        canvas { display: block; }
+        #dashboard { 
+            position: absolute; 
+            top: 20px; 
+            left: 20px; 
+            color: #e0e0e0; 
+            background: rgba(30, 30, 30, 0.85); 
+            padding: 20px; 
+            border-radius: 12px; 
+            border: 1px solid rgba(255,255,255,0.1);
+            backdrop-filter: blur(10px);
+            min-width: 220px;
+        }
+        h3 { margin-top: 0; color: #4a90e2; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; }
+        .data-field { margin: 12px 0; font-size: 14px; font-family: monospace; }
+        .value { font-weight: bold; color: #00ffcc; float: right; }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+    <div id="dashboard">
+        <h3>Twin Live Stream</h3>
+        <div class="data-field">Valve Position: <span id="ui-valve" class="value">0</span>°</div>
+        <div class="data-field">Flow Rate: <span id="ui-flow" class="value">0.00</span> L/m</div>
+        <div class="data-field">Soil Moisture: <span id="ui-moisture" class="value">0</span>%</div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // 1. Core Scene Environment
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x141414);
+
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 5, 12); 
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.target.set(-2, 0, 0); 
+
+        // Lighting
+        scene.add(new THREE.AmbientLight(0xffffff, 1.2));
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        dirLight.position.set(10, 20, 10);
+        scene.add(dirLight);
+
+        // 2. Twin Object Assembly
+        const objLoader = new OBJLoader();
+
+        let valveHandle = null;
+        let soilMesh = null; 
+        const pipeMaterial = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.3, metalness: 0.6 });
+
+        // --- PIPELINE ASSEMBLY (Right Side) ---
+        
+        const pipeRightGeo = new THREE.CylinderGeometry(0.2, 0.2, 4);
+        const pipeRight = new THREE.Mesh(pipeRightGeo, pipeMaterial);
+        pipeRight.rotation.z = Math.PI / 2;
+        pipeRight.position.set(4, 0, 0);
+        scene.add(pipeRight);
+
+        objLoader.load('models/ball_valve.obj', (obj) => {
+            obj.scale.set(0.01, 0.01, 0.01);
+            obj.position.set(1.80, 0.00, 0.00); 
+            obj.rotation.y = 3.14; 
+            scene.add(obj);
+
+            obj.traverse((child) => {
+                if (child.isMesh) {
+                    child.geometry.computeVertexNormals();
+                    child.material = new THREE.MeshStandardMaterial({ color: 0x7f8c8d, roughness: 0.4 });
+                    if (!valveHandle) valveHandle = child; 
+                }
+            });
+        });
+
+        const pipeMidGeo = new THREE.CylinderGeometry(0.2, 0.2, 3);
+        const pipeMid = new THREE.Mesh(pipeMidGeo, pipeMaterial);
+        pipeMid.rotation.z = Math.PI / 2;
+        pipeMid.position.set(0, 0, 0);
+        scene.add(pipeMid);
+
+        objLoader.load('models/flow_sensor.obj', (obj) => {
+            obj.scale.set(0.01, 0.01, 0.01);
+            obj.position.set(-1.45, -0.30, 0.15); 
+            obj.rotation.y = 3.14; 
+            scene.add(obj);
+
+            obj.traverse((child) => {
+                if (child.isMesh) {
+                    child.geometry.computeVertexNormals();
+                    child.material = new THREE.MeshStandardMaterial({ color: 0x2980b9, roughness: 0.3 });
+                }
+            });
+        });
+
+        const pipeLeftGeo = new THREE.CylinderGeometry(0.2, 0.2, 4);
+        const pipeLeft = new THREE.Mesh(pipeLeftGeo, pipeMaterial);
+        pipeLeft.rotation.z = Math.PI / 2; 
+        pipeLeft.position.set(-4, 0, 0);
+        scene.add(pipeLeft);
+
+
+        // --- SOIL BED ASSEMBLY (Left Side) ---
+        
+        // Planter Enclosure Box
+        const boxGeo = new THREE.BoxGeometry(4, 2, 4);
+        const boxMat = new THREE.MeshStandardMaterial({ color: 0x34495e, roughness: 0.6 });
+        const container = new THREE.Mesh(boxGeo, boxMat);
+        container.position.set(-7, -1, 0);
+        scene.add(container);
+
+        // Active Functional Dirt Mesh
+        const soilGeo = new THREE.BoxGeometry(3.9, 1.8, 3.9);
+        const soilMat = new THREE.MeshStandardMaterial({ color: 0xd2b48c, roughness: 0.9 });
+        soilMesh = new THREE.Mesh(soilGeo, soilMat);
+        soilMesh.position.set(-7, -0.9, 0);
+        scene.add(soilMesh);
+
+        // Load Custom Soil Moisture OBJ Model
+        objLoader.load('models/soil_moisture.obj', (obj) => {
+            obj.scale.set(20, 20, 20); 
+            obj.position.set(-6.00, -0.5, 0.00); 
+            scene.add(obj);
+
+            obj.traverse((child) => {
+                if (child.isMesh) {
+                    child.geometry.computeVertexNormals(); 
+                    child.material = new THREE.MeshStandardMaterial({ color: 0x95a5a6, roughness: 0.5 });
+                }
+            });
+        }, undefined, (err) => console.error('Failed to load soil_moisture.obj:', err));
+
+
+        // 3. Establish Network Stream Pipe Connection
+        // CRITICAL: Replace with your actual ESP32 IP
+        const socket = new WebSocket('ws://10.112.86.21:81'); 
+
+        socket.onopen = () => console.log('IoT WebSocket Link Established');
+        socket.onerror = (err) => console.error('IoT WebSocket Error:', err);
+
+        socket.onmessage = function(event) {
+            try {
+                const telemetry = JSON.parse(event.data);
+                
+                if(telemetry.valveAngle !== undefined) document.getElementById('ui-valve').innerText = telemetry.valveAngle;
+                if(telemetry.flow !== undefined) document.getElementById('ui-flow').innerText = telemetry.flow.toFixed(2);
+                if(telemetry.moisture !== undefined) document.getElementById('ui-moisture').innerText = telemetry.moisture;
+
+                // Rotate physical model handle bounds
+                if (valveHandle && telemetry.valveAngle !== undefined) {
+                    valveHandle.rotation.z = THREE.MathUtils.degToRad(telemetry.valveAngle); 
+                }
+
+                // Dynamic color blending on the Dirt Box
+                if (soilMesh && telemetry.moisture !== undefined) {
+                    const dry = new THREE.Color(0xd2b48c); // Light Tan
+                    const wet = new THREE.Color(0x3e2723); // Deep Rich Soil Brown
+                    
+                    let targetFactor = telemetry.moisture / 100;
+                    targetFactor = Math.max(0, Math.min(1, targetFactor)); 
+
+                    soilMesh.material.color.lerpColors(dry, wet, targetFactor);
+                    soilMesh.material.needsUpdate = true;
+                }
+            } catch (err) {
+                console.error("Payload parse error:", err);
+            }
+        };
+
+        // 4. Execution Frame Loop
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
