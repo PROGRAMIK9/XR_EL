@@ -16,11 +16,14 @@
             border-radius: 12px; 
             border: 1px solid rgba(255,255,255,0.1);
             backdrop-filter: blur(10px);
-            min-width: 220px;
+            min-width: 260px;
         }
         h3 { margin-top: 0; color: #4a90e2; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; }
         .data-field { margin: 12px 0; font-size: 14px; font-family: monospace; }
         .value { font-weight: bold; color: #00ffcc; float: right; }
+        
+        /* Custom styling for the simulation slider */
+        input[type=range] { width: 100%; margin-top: 5px; cursor: pointer; }
     </style>
     <script type="importmap">
         {
@@ -37,11 +40,19 @@
         <div class="data-field">Valve Position: <span id="ui-valve" class="value">0</span>°</div>
         <div class="data-field">Flow Rate: <span id="ui-flow" class="value">0.00</span> L/m</div>
         <div class="data-field">Soil Moisture: <span id="ui-moisture" class="value">0</span>%</div>
+        
+        <hr style="border-color: rgba(255,255,255,0.1); margin: 15px 0;">
+        
+        <div class="data-field" style="color: #f39c12;">
+            Simulate Water Pressure:
+            <input type="range" id="sim-pressure" min="0" max="30" step="0.5" value="0">
+        </div>
     </div>
 
     <script type="module">
         import * as THREE from 'three';
         import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+        import { FBXLoader } from 'three/addons/loaders/FBXLoader.js'; 
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
         // 1. Core Scene Environment
@@ -66,33 +77,39 @@
 
         // 2. Twin Object Assembly
         const objLoader = new OBJLoader();
+        const fbxLoader = new FBXLoader();
 
         let valveHandle = null;
         let soilMesh = null; 
         const pipeMaterial = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.3, metalness: 0.6 });
 
         // --- PIPELINE ASSEMBLY (Right Side) ---
-        
         const pipeRightGeo = new THREE.CylinderGeometry(0.2, 0.2, 4);
         const pipeRight = new THREE.Mesh(pipeRightGeo, pipeMaterial);
         pipeRight.rotation.z = Math.PI / 2;
         pipeRight.position.set(4, 0, 0);
         scene.add(pipeRight);
 
-        objLoader.load('models/ball_valve.obj', (obj) => {
-            obj.scale.set(0.01, 0.01, 0.01);
-            obj.position.set(1.80, 0.00, 0.00); 
-            obj.rotation.y = 3.14; 
-            scene.add(obj);
-
-            obj.traverse((child) => {
+        // Load Ball Valve as FBX
+        fbxLoader.load('models/ball_valve.fbx', (fbx) => {
+            fbx.scale.set(0.0001, 0.0001, 0.0001); 
+            fbx.position.set(1.80, 0.00, 0.00); 
+            fbx.rotation.y = 3.14; 
+            scene.add(fbx);
+            fbx.traverse((child) => {
                 if (child.isMesh) {
                     child.geometry.computeVertexNormals();
                     child.material = new THREE.MeshStandardMaterial({ color: 0x7f8c8d, roughness: 0.4 });
-                    if (!valveHandle) valveHandle = child; 
+                    
+                    // Search for the separated handle
+                    if (child.name.includes('Valve') || child.name.includes('Top')) {
+                        valveHandle = child; 
+                    } else if (!valveHandle) {
+                        valveHandle = child; 
+                    }
                 }
             });
-        });
+        }, undefined, (err) => console.error('Failed to load ball_valve.fbx:', err));
 
         const pipeMidGeo = new THREE.CylinderGeometry(0.2, 0.2, 3);
         const pipeMid = new THREE.Mesh(pipeMidGeo, pipeMaterial);
@@ -122,22 +139,18 @@
 
 
         // --- SOIL BED ASSEMBLY (Left Side) ---
-        
-        // Planter Enclosure Box
         const boxGeo = new THREE.BoxGeometry(4, 2, 4);
         const boxMat = new THREE.MeshStandardMaterial({ color: 0x34495e, roughness: 0.6 });
         const container = new THREE.Mesh(boxGeo, boxMat);
         container.position.set(-7, -1, 0);
         scene.add(container);
 
-        // Active Functional Dirt Mesh
         const soilGeo = new THREE.BoxGeometry(3.9, 1.8, 3.9);
         const soilMat = new THREE.MeshStandardMaterial({ color: 0xd2b48c, roughness: 0.9 });
         soilMesh = new THREE.Mesh(soilGeo, soilMat);
         soilMesh.position.set(-7, -0.9, 0);
         scene.add(soilMesh);
 
-        // Load Custom Soil Moisture OBJ Model
         objLoader.load('models/soil_moisture.obj', (obj) => {
             obj.scale.set(20, 20, 20); 
             obj.position.set(-6.00, -0.5, 0.00); 
@@ -152,8 +165,40 @@
         }, undefined, (err) => console.error('Failed to load soil_moisture.obj:', err));
 
 
-        // 3. Establish Network Stream Pipe Connection
-        // CRITICAL: Replace with your actual ESP32 IP
+        // --- 3. KINEMATIC MAPPING LOGIC ---
+        const MAX_FLOW_RATE = 30.0; // The max physical L/min your system can handle
+
+        // Unified function to update the entire twin based purely on flow rate
+        function processFlowDynamics(currentFlowRate) {
+            // Update Flow UI
+            document.getElementById('ui-flow').innerText = currentFlowRate.toFixed(2);
+
+            // Calculate Inferred Angle (0 to 90 degrees based on flow percentage)
+            let flowRatio = currentFlowRate / MAX_FLOW_RATE;
+            flowRatio = Math.max(0, Math.min(1, flowRatio)); // Clamp to max 100%
+            
+            let inferredAngle = flowRatio * 90.0;
+            
+            // Update Valve UI
+            document.getElementById('ui-valve').innerText = Math.round(inferredAngle);
+
+            // Rotate the physical 3D Handle
+            if (valveHandle) {
+                // Note: Change .z to .x or .y if your FBX spins on the wrong axis
+                valveHandle.rotation.y = THREE.MathUtils.degToRad(inferredAngle); 
+            }
+        }
+
+        // --- 4. MANUAL SIMULATION FALLBACK ---
+        const pressureSlider = document.getElementById('sim-pressure');
+        
+        pressureSlider.addEventListener('input', (event) => {
+            let simulatedFlowRate = parseFloat(event.target.value);
+            processFlowDynamics(simulatedFlowRate);
+        });
+
+
+        // --- 5. IoT HARDWARE OVERRIDE ---
         const socket = new WebSocket('ws://10.112.86.21:81'); 
 
         socket.onopen = () => console.log('IoT WebSocket Link Established');
@@ -163,32 +208,30 @@
             try {
                 const telemetry = JSON.parse(event.data);
                 
-                if(telemetry.valveAngle !== undefined) document.getElementById('ui-valve').innerText = telemetry.valveAngle;
-                if(telemetry.flow !== undefined) document.getElementById('ui-flow').innerText = telemetry.flow.toFixed(2);
-                if(telemetry.moisture !== undefined) document.getElementById('ui-moisture').innerText = telemetry.moisture;
-
-                // Rotate physical model handle bounds
-                if (valveHandle && telemetry.valveAngle !== undefined) {
-                    valveHandle.rotation.z = THREE.MathUtils.degToRad(telemetry.valveAngle); 
+                // If real hardware flow data arrives, process it and snap the slider to match
+                if (telemetry.flow !== undefined) {
+                    processFlowDynamics(telemetry.flow);
+                    pressureSlider.value = telemetry.flow; 
                 }
 
-                // Dynamic color blending on the Dirt Box
-                if (soilMesh && telemetry.moisture !== undefined) {
-                    const dry = new THREE.Color(0xd2b48c); // Light Tan
-                    const wet = new THREE.Color(0x3e2723); // Deep Rich Soil Brown
+                // Standard Soil Moisture Logic
+                if(telemetry.moisture !== undefined) {
+                    document.getElementById('ui-moisture').innerText = telemetry.moisture;
                     
-                    let targetFactor = telemetry.moisture / 100;
-                    targetFactor = Math.max(0, Math.min(1, targetFactor)); 
-
-                    soilMesh.material.color.lerpColors(dry, wet, targetFactor);
-                    soilMesh.material.needsUpdate = true;
+                    if (soilMesh) {
+                        const dry = new THREE.Color(0xd2b48c); 
+                        const wet = new THREE.Color(0x3e2723); 
+                        let targetFactor = Math.max(0, Math.min(1, telemetry.moisture / 100)); 
+                        soilMesh.material.color.lerpColors(dry, wet, targetFactor);
+                        soilMesh.material.needsUpdate = true;
+                    }
                 }
             } catch (err) {
                 console.error("Payload parse error:", err);
             }
         };
 
-        // 4. Execution Frame Loop
+        // --- 6. RENDER LOOP ---
         function animate() {
             requestAnimationFrame(animate);
             controls.update();
