@@ -6,6 +6,7 @@
     <style>
         body { margin: 0; overflow: hidden; background-color: #121212; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         canvas { display: block; }
+        
         #dashboard { 
             position: absolute; 
             top: 20px; 
@@ -17,13 +18,33 @@
             border: 1px solid rgba(255,255,255,0.1);
             backdrop-filter: blur(10px);
             min-width: 260px;
+            z-index: 10;
         }
         h3 { margin-top: 0; color: #4a90e2; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; }
         .data-field { margin: 12px 0; font-size: 14px; font-family: monospace; }
         .value { font-weight: bold; color: #00ffcc; float: right; }
-        
-        /* Custom styling for the simulation slider */
         input[type=range] { width: 100%; margin-top: 5px; cursor: pointer; }
+
+        /* --- NEW: Critical Alert Banner --- */
+        #alert-banner {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(231, 76, 60, 0.9);
+            color: white;
+            padding: 15px 30px;
+            border-radius: 8px;
+            font-weight: bold;
+            font-size: 18px;
+            letter-spacing: 1px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            display: none; /* Hidden by default */
+            z-index: 100;
+            text-align: center;
+        }
+        .flash { animation: pulse 1s infinite; }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
     </style>
     <script type="importmap">
         {
@@ -35,21 +56,26 @@
     </script>
 </head>
 <body>
+    
+    <div id="alert-banner" class="flash">⚠️ SYSTEM ALERT</div>
+
     <div id="dashboard">
         <h3>Twin Live Stream</h3>
         <div class="data-field">Valve Position: <span id="ui-valve" class="value">0</span>°</div>
         <div class="data-field">Flow Rate: <span id="ui-flow" class="value">0.00</span> L/m</div>
         <div class="data-field">Soil Moisture: <span id="ui-moisture" class="value">0</span>%</div>
+        <div class="data-field" style="color: #bdc3c7;">Pipe Health: <span id="ui-health" class="value" style="color: #2ecc71;">100%</span></div>
+        <div class="data-field" style="color: #bdc3c7;">System Pressure: <span id="ui-pressure" class="value">Normal</span></div>
         
         <hr style="border-color: rgba(255,255,255,0.1); margin: 15px 0;">
         
         <div class="data-field" style="color: #f39c12;">
-            Simulate Water Pressure:
+            Simulate Flow (Manual Override):
             <input type="range" id="sim-pressure" min="0" max="30" step="0.5" value="0">
         </div>
     </div>
 
-    <script type="module">
+    <!-- <script type="module">
         import * as THREE from 'three';
         import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
         import { FBXLoader } from 'three/addons/loaders/FBXLoader.js'; 
@@ -62,7 +88,7 @@
         const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
         camera.position.set(0, 5, 12); 
 
-        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
         document.body.appendChild(renderer.domElement);
 
@@ -70,10 +96,28 @@
         controls.target.set(-2, 0, 0); 
 
         // Lighting
-        scene.add(new THREE.AmbientLight(0xffffff, 1.2));
-        const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        scene.add(new THREE.AmbientLight(0xffffff, 1.5));
+        const dirLight = new THREE.DirectionalLight(0xffffff, 2.0);
         dirLight.position.set(10, 20, 10);
         scene.add(dirLight);
+
+        // --- DYNAMIC WATER TEXTURE ---
+        function createWaterTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 256; canvas.height = 256;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#1e90ff';
+            ctx.fillRect(0, 0, 256, 256);
+            ctx.fillStyle = '#87cefa';
+            for(let i = 0; i < 256; i += 32) { ctx.fillRect(0, i, 256, 10); }
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping;
+            tex.repeat.set(1, 4); 
+            return tex;
+        }
+
+        const waterTexture = createWaterTexture();
+        let globalFlowSpeed = 0; 
 
         // 2. Twin Object Assembly
         const objLoader = new OBJLoader();
@@ -81,48 +125,45 @@
 
         let valveHandle = null;
         let soilMesh = null; 
-        const pipeMaterial = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.3, metalness: 0.6 });
+        let waterStreamDrop = null;
+        
+        // Materials
+        const glassPipeMaterial = new THREE.MeshPhysicalMaterial({ 
+            color: 0xffffff, opacity: 0.25, metalness: 0.2, roughness: 0.1, transparent: true, depthWrite: false, side: THREE.DoubleSide
+        });
 
-        // --- PIPELINE ASSEMBLY (Right Side) ---
+        const innerWaterMaterial = new THREE.MeshBasicMaterial({ map: waterTexture, color: 0x3498db, transparent: true, opacity: 0.0 });
+        const sourceWaterMaterial = new THREE.MeshBasicMaterial({ map: waterTexture, color: 0x3498db, transparent: true, opacity: 0.8 });
+
+        // Pipe Construction
         const pipeRightGeo = new THREE.CylinderGeometry(0.2, 0.2, 4);
-        const pipeRight = new THREE.Mesh(pipeRightGeo, pipeMaterial);
-        pipeRight.rotation.z = Math.PI / 2;
-        pipeRight.position.set(4, 0, 0);
-        scene.add(pipeRight);
+        const pipeRight = new THREE.Mesh(pipeRightGeo, glassPipeMaterial);
+        pipeRight.rotation.z = Math.PI / 2; pipeRight.position.set(4, 0, 0); scene.add(pipeRight);
 
-        // Load Ball Valve as FBX
+        const waterRight = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 4), sourceWaterMaterial);
+        waterRight.rotation.z = Math.PI / 2; waterRight.position.set(4, 0, 0); scene.add(waterRight);
+
         fbxLoader.load('models/ball_valve.fbx', (fbx) => {
             fbx.scale.set(0.0001, 0.0001, 0.0001); 
-            fbx.position.set(1.80, 0.00, 0.00); 
-            fbx.rotation.y = 3.14; 
-            scene.add(fbx);
+            fbx.position.set(1.80, 0.00, 0.00); fbx.rotation.y = 3.14; scene.add(fbx);
             fbx.traverse((child) => {
                 if (child.isMesh) {
                     child.geometry.computeVertexNormals();
                     child.material = new THREE.MeshStandardMaterial({ color: 0x7f8c8d, roughness: 0.4 });
-                    
-                    // Search for the separated handle
-                    if (child.name.includes('Valve') || child.name.includes('Top')) {
-                        valveHandle = child; 
-                    } else if (!valveHandle) {
-                        valveHandle = child; 
-                    }
+                    if (child.name.includes('Valve') || child.name.includes('Top')) valveHandle = child; 
+                    else if (!valveHandle) valveHandle = child; 
                 }
             });
-        }, undefined, (err) => console.error('Failed to load ball_valve.fbx:', err));
+        });
 
-        const pipeMidGeo = new THREE.CylinderGeometry(0.2, 0.2, 3);
-        const pipeMid = new THREE.Mesh(pipeMidGeo, pipeMaterial);
-        pipeMid.rotation.z = Math.PI / 2;
-        pipeMid.position.set(0, 0, 0);
-        scene.add(pipeMid);
+        const pipeMid = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 3), glassPipeMaterial);
+        pipeMid.rotation.z = Math.PI / 2; pipeMid.position.set(0, 0, 0); scene.add(pipeMid);
+
+        const waterMid = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 3), innerWaterMaterial);
+        waterMid.rotation.z = Math.PI / 2; waterMid.position.set(0, 0, 0); scene.add(waterMid);
 
         objLoader.load('models/flow_sensor.obj', (obj) => {
-            obj.scale.set(0.01, 0.01, 0.01);
-            obj.position.set(-1.45, -0.30, 0.15); 
-            obj.rotation.y = 3.14; 
-            scene.add(obj);
-
+            obj.scale.set(0.01, 0.01, 0.01); obj.position.set(-1.45, -0.30, 0.15); obj.rotation.y = 3.14; scene.add(obj);
             obj.traverse((child) => {
                 if (child.isMesh) {
                     child.geometry.computeVertexNormals();
@@ -131,110 +172,435 @@
             });
         });
 
-        const pipeLeftGeo = new THREE.CylinderGeometry(0.2, 0.2, 4);
-        const pipeLeft = new THREE.Mesh(pipeLeftGeo, pipeMaterial);
-        pipeLeft.rotation.z = Math.PI / 2; 
-        pipeLeft.position.set(-4, 0, 0);
-        scene.add(pipeLeft);
+        const pipeLeft = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 4), glassPipeMaterial);
+        pipeLeft.rotation.z = Math.PI / 2; pipeLeft.position.set(-4, 0, 0); scene.add(pipeLeft);
 
+        const waterLeft = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 4), innerWaterMaterial);
+        waterLeft.rotation.z = Math.PI / 2; waterLeft.position.set(-4, 0, 0); scene.add(waterLeft);
 
-        // --- SOIL BED ASSEMBLY (Left Side) ---
-        const boxGeo = new THREE.BoxGeometry(4, 2, 4);
-        const boxMat = new THREE.MeshStandardMaterial({ color: 0x34495e, roughness: 0.6 });
-        const container = new THREE.Mesh(boxGeo, boxMat);
-        container.position.set(-7, -1, 0);
-        scene.add(container);
+        // Falling Water Stream
+        const streamGeo = new THREE.CylinderGeometry(0.15, 0.12, 1.2); streamGeo.translate(0, -0.6, 0); 
+        waterStreamDrop = new THREE.Mesh(streamGeo, new THREE.MeshBasicMaterial({ color: 0x3498db, transparent: true, opacity: 0.0 }));
+        waterStreamDrop.position.set(-6, 0, 0); scene.add(waterStreamDrop);
 
-        const soilGeo = new THREE.BoxGeometry(3.9, 1.8, 3.9);
-        const soilMat = new THREE.MeshStandardMaterial({ color: 0xd2b48c, roughness: 0.9 });
-        soilMesh = new THREE.Mesh(soilGeo, soilMat);
-        soilMesh.position.set(-7, -0.9, 0);
-        scene.add(soilMesh);
+        // Soil Bed
+        const container = new THREE.Mesh(new THREE.BoxGeometry(4, 2, 4), new THREE.MeshStandardMaterial({ color: 0x34495e, roughness: 0.6 }));
+        container.position.set(-7, -1, 0); scene.add(container);
+
+        soilMesh = new THREE.Mesh(new THREE.BoxGeometry(3.9, 1.8, 3.9), new THREE.MeshStandardMaterial({ color: 0xd2b48c, roughness: 0.9 }));
+        soilMesh.position.set(-7, -0.9, 0); scene.add(soilMesh);
+
+        // --- NEW: PHYSICAL SURFACE WATER PUDDLE ---
+        const surfaceWaterGeo = new THREE.PlaneGeometry(3.9, 3.9);
+        const surfaceWaterMat = new THREE.MeshPhysicalMaterial({
+            color: 0x3498db, transmission: 0.9, opacity: 0.9, transparent: true, roughness: 0.0, ior: 1.33, side: THREE.DoubleSide
+        });
+        const surfaceWater = new THREE.Mesh(surfaceWaterGeo, surfaceWaterMat);
+        surfaceWater.rotation.x = -Math.PI / 2;
+        surfaceWater.position.set(-7, 0.05, 0); // Positioned EXACTLY on top of the soil model
+        surfaceWater.visible = false; // Hidden until moisture is high
+        scene.add(surfaceWater);
+
+        // --- NEW: LEAKAGE PARTICLE SPRAY ---
+        const leakSpray = new THREE.Mesh(
+            new THREE.ConeGeometry(0.3, 1, 8), 
+            new THREE.MeshBasicMaterial({ color: 0x87cefa, transparent: true, opacity: 0.6, side: THREE.DoubleSide })
+        );
+        leakSpray.position.set(1.5, -0.5, 0); // Spawning at the valve joint
+        leakSpray.rotation.x = Math.PI; // Point down
+        leakSpray.visible = false;
+        scene.add(leakSpray);
 
         objLoader.load('models/soil_moisture.obj', (obj) => {
-            obj.scale.set(20, 20, 20); 
-            obj.position.set(-6.00, -0.5, 0.00); 
-            scene.add(obj);
-
+            obj.scale.set(20, 20, 20); obj.position.set(-6.00, -0.5, 0.00); scene.add(obj);
             obj.traverse((child) => {
                 if (child.isMesh) {
                     child.geometry.computeVertexNormals(); 
                     child.material = new THREE.MeshStandardMaterial({ color: 0x95a5a6, roughness: 0.5 });
                 }
             });
-        }, undefined, (err) => console.error('Failed to load soil_moisture.obj:', err));
-
+        });
 
         // --- 3. KINEMATIC MAPPING LOGIC ---
-        const MAX_FLOW_RATE = 30.0; // The max physical L/min your system can handle
-
-        // Unified function to update the entire twin based purely on flow rate
+        const MAX_FLOW_RATE = 30.0; 
         function processFlowDynamics(currentFlowRate) {
-            // Update Flow UI
             document.getElementById('ui-flow').innerText = currentFlowRate.toFixed(2);
-
-            // Calculate Inferred Angle (0 to 90 degrees based on flow percentage)
             let flowRatio = currentFlowRate / MAX_FLOW_RATE;
-            flowRatio = Math.max(0, Math.min(1, flowRatio)); // Clamp to max 100%
+            flowRatio = Math.max(0, Math.min(1, flowRatio)); 
             
             let inferredAngle = flowRatio * 90.0;
-            
-            // Update Valve UI
             document.getElementById('ui-valve').innerText = Math.round(inferredAngle);
 
-            // Rotate the physical 3D Handle
-            if (valveHandle) {
-                // Note: Change .z to .x or .y if your FBX spins on the wrong axis
-                valveHandle.rotation.y = THREE.MathUtils.degToRad(inferredAngle); 
+            if (valveHandle) valveHandle.rotation.y = THREE.MathUtils.degToRad(inferredAngle); 
+            globalFlowSpeed = flowRatio;
+
+            if (currentFlowRate > 0.5) {
+                innerWaterMaterial.opacity = 0.4 + (flowRatio * 0.4);
+                if (waterStreamDrop) {
+                    waterStreamDrop.material.opacity = 0.4 + (flowRatio * 0.4);
+                    waterStreamDrop.scale.set(flowRatio, 1, flowRatio);
+                }
+            } else {
+                innerWaterMaterial.opacity = 0;
+                if (waterStreamDrop) waterStreamDrop.material.opacity = 0;
             }
         }
 
-        // --- 4. MANUAL SIMULATION FALLBACK ---
         const pressureSlider = document.getElementById('sim-pressure');
-        
         pressureSlider.addEventListener('input', (event) => {
-            let simulatedFlowRate = parseFloat(event.target.value);
-            processFlowDynamics(simulatedFlowRate);
+            processFlowDynamics(parseFloat(event.target.value));
         });
 
-
-        // --- 5. IoT HARDWARE OVERRIDE ---
-        const socket = new WebSocket('ws://10.112.86.21:81'); 
-
-        socket.onopen = () => console.log('IoT WebSocket Link Established');
-        socket.onerror = (err) => console.error('IoT WebSocket Error:', err);
-
-        socket.onmessage = function(event) {
-            try {
-                const telemetry = JSON.parse(event.data);
-                
-                // If real hardware flow data arrives, process it and snap the slider to match
-                if (telemetry.flow !== undefined) {
-                    processFlowDynamics(telemetry.flow);
-                    pressureSlider.value = telemetry.flow; 
-                }
-
-                // Standard Soil Moisture Logic
-                if(telemetry.moisture !== undefined) {
-                    document.getElementById('ui-moisture').innerText = telemetry.moisture;
-                    
-                    if (soilMesh) {
-                        const dry = new THREE.Color(0xd2b48c); 
-                        const wet = new THREE.Color(0x3e2723); 
-                        let targetFactor = Math.max(0, Math.min(1, telemetry.moisture / 100)); 
-                        soilMesh.material.color.lerpColors(dry, wet, targetFactor);
-                        soilMesh.material.needsUpdate = true;
-                    }
-                }
-            } catch (err) {
-                console.error("Payload parse error:", err);
-            }
+        // --- 5. BACKEND PHYSICS ENGINE INTEGRATION ---
+        const alertBanner = document.getElementById('alert-banner');
+        
+        // Simulating the WebSocket payload for testing purposes. 
+        // In production, keep your: const socket = new WebSocket('ws://10.112.86.21:81');
+        const socket = {
+            onmessage: function(event) {} // Stub
         };
+
+        // This replaces your old onmessage logic to include the new physics parameters
+        function handleTelemetry(telemetry) {
+            // Flow & Valve logic
+            if (telemetry.flow !== undefined) {
+                processFlowDynamics(telemetry.flow);
+                pressureSlider.value = telemetry.flow; 
+            }
+
+            // Soil & Water Puddle logic
+            if(telemetry.moisture !== undefined) {
+                document.getElementById('ui-moisture').innerText = telemetry.moisture;
+                
+                if (soilMesh) {
+                    const dry = new THREE.Color(0xd2b48c); 
+                    const wet = new THREE.Color(0x3e2723); 
+                    let targetFactor = Math.max(0, Math.min(1, telemetry.moisture / 100)); 
+                    soilMesh.material.color.lerpColors(dry, wet, targetFactor);
+                    soilMesh.material.needsUpdate = true;
+                }
+
+                // Show surface water puddle if soil is saturated (> 80%)
+                surfaceWater.visible = telemetry.moisture > 80;
+
+                // UI Alert for low moisture
+                if (telemetry.moisture < 20) {
+                    alertBanner.style.display = 'block';
+                    alertBanner.innerText = '⚠️ CRITICAL: SOIL MOISTURE LOW';
+                } else {
+                    alertBanner.style.display = 'none';
+                }
+            }
+
+            // --- THE NEW PHYSICS LOGIC ---
+            if (telemetry.pipeHealth !== undefined) {
+                document.getElementById('ui-health').innerText = `${telemetry.pipeHealth}%`;
+                // If corrosion hits, visually rust the glass pipe
+                if (telemetry.pipeHealth < 50) {
+                    glassPipeMaterial.color.setHex(0xb87333); // Copper/Rust color
+                    document.getElementById('ui-health').style.color = '#e74c3c';
+                } else {
+                    glassPipeMaterial.color.setHex(0xffffff); // Clean Glass
+                    document.getElementById('ui-health').style.color = '#2ecc71';
+                }
+            }
+
+            if (telemetry.isLeaking !== undefined) {
+                leakSpray.visible = telemetry.isLeaking;
+                if (telemetry.isLeaking) {
+                    alertBanner.style.display = 'block';
+                    alertBanner.innerText = '🚨 WARNING: SYSTEM LEAK DETECTED';
+                    document.getElementById('ui-pressure').innerText = 'DROP/LEAK';
+                    document.getElementById('ui-pressure').style.color = '#e74c3c';
+                } else {
+                    document.getElementById('ui-pressure').innerText = 'Normal';
+                    document.getElementById('ui-pressure').style.color = '#2ecc71';
+                }
+            }
+        }
 
         // --- 6. RENDER LOOP ---
         function animate() {
             requestAnimationFrame(animate);
             controls.update();
+
+            waterTexture.offset.y -= globalFlowSpeed * 0.05;
+
+            if (waterStreamDrop && waterStreamDrop.material.opacity > 0) {
+                const jitter = 0.9 + (Math.random() * 0.2);
+                const baseScale = waterStreamDrop.scale.y; 
+                waterStreamDrop.scale.set(baseScale * jitter, 1, baseScale * jitter);
+            }
+
+            // Animate Leak Spray
+            if (leakSpray.visible) {
+                leakSpray.scale.set(1 + Math.random()*0.3, 1 + Math.random()*0.5, 1 + Math.random()*0.3);
+            }
+
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Debug trigger (remove in production)
+        // setTimeout(() => handleTelemetry({ flow: 15, moisture: 10, pipeHealth: 100, isLeaking: false }), 2000);
+        // setTimeout(() => handleTelemetry({ flow: 25, moisture: 85, pipeHealth: 40, isLeaking: true }), 5000);
+    </script> -->
+    <script type="module">
+        import * as THREE from 'three';
+        import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+        import { FBXLoader } from 'three/addons/loaders/FBXLoader.js'; 
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // --- 1. CORE ENVIRONMENT ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x141414);
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 5, 12); 
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.target.set(-2, 0, 0); 
+        scene.add(new THREE.AmbientLight(0xffffff, 1.5));
+        const dirLight = new THREE.DirectionalLight(0xffffff, 2.0);
+        dirLight.position.set(10, 20, 10);
+        scene.add(dirLight);
+
+        // --- 2. TEXTURES & MATERIALS ---
+        function createWaterTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 256; canvas.height = 256;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#1e90ff'; ctx.fillRect(0, 0, 256, 256);
+            ctx.fillStyle = '#87cefa';
+            for(let i = 0; i < 256; i += 32) ctx.fillRect(0, i, 256, 10);
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(1, 4); 
+            return tex;
+        }
+        const waterTexture = createWaterTexture();
+        
+        const glassPipeMaterial = new THREE.MeshPhysicalMaterial({ color: 0xffffff, opacity: 0.25, transparent: true, depthWrite: false, side: THREE.DoubleSide });
+        const innerWaterMaterial = new THREE.MeshBasicMaterial({ map: waterTexture, color: 0x3498db, transparent: true, opacity: 0.0 });
+        const sourceWaterMaterial = new THREE.MeshBasicMaterial({ map: waterTexture, color: 0x3498db, transparent: true, opacity: 0.8 });
+
+        // --- 3. MODEL ASSEMBLY ---
+        const objLoader = new OBJLoader();
+        const fbxLoader = new FBXLoader();
+        let valveHandle, soilMesh, waterStreamDrop, pipeMid;
+
+        // Right Pipe
+        const pipeRight = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 4), glassPipeMaterial);
+        pipeRight.rotation.z = Math.PI / 2; pipeRight.position.set(4, 0, 0); scene.add(pipeRight);
+        const waterRight = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 4), sourceWaterMaterial);
+        waterRight.rotation.z = Math.PI / 2; waterRight.position.set(4, 0, 0); scene.add(waterRight);
+
+        // Valve
+        fbxLoader.load('models/ball_valve.fbx', (fbx) => {
+            fbx.scale.set(0.0001, 0.0001, 0.0001); fbx.position.set(1.80, 0.00, 0.00); fbx.rotation.y = 3.14; scene.add(fbx);
+            fbx.traverse((child) => {
+                if (child.isMesh) {
+                    child.material = new THREE.MeshStandardMaterial({ color: 0x7f8c8d, roughness: 0.4 });
+                    if (child.name.includes('Valve') || child.name.includes('Top')) valveHandle = child; 
+                    else if (!valveHandle) valveHandle = child; 
+                }
+            });
+        });
+
+        // Middle Pipe (The Interactive One)
+        pipeMid = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 3), glassPipeMaterial.clone()); // Cloned material so only this rusts
+        pipeMid.rotation.z = Math.PI / 2; pipeMid.position.set(0, 0, 0); scene.add(pipeMid);
+        const waterMid = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 3), innerWaterMaterial);
+        waterMid.rotation.z = Math.PI / 2; waterMid.position.set(0, 0, 0); scene.add(waterMid);
+
+        // Left Pipe
+        const pipeLeft = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 4), glassPipeMaterial);
+        pipeLeft.rotation.z = Math.PI / 2; pipeLeft.position.set(-4, 0, 0); scene.add(pipeLeft);
+        const waterLeft = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 4), innerWaterMaterial);
+        waterLeft.rotation.z = Math.PI / 2; waterLeft.position.set(-4, 0, 0); scene.add(waterLeft);
+
+        // Stream & Soil
+        waterStreamDrop = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.12, 1.2).translate(0,-0.6,0), new THREE.MeshBasicMaterial({ color: 0x3498db, transparent: true, opacity: 0.0 }));
+        waterStreamDrop.position.set(-6, 0, 0); scene.add(waterStreamDrop);
+        
+        const container = new THREE.Mesh(new THREE.BoxGeometry(4, 2, 4), new THREE.MeshStandardMaterial({ color: 0x34495e }));
+        container.position.set(-7, -1, 0); scene.add(container);
+        soilMesh = new THREE.Mesh(new THREE.BoxGeometry(3.9, 1.8, 3.9), new THREE.MeshStandardMaterial({ color: 0xd2b48c }));
+        soilMesh.position.set(-7, -0.9, 0); scene.add(soilMesh);
+
+        // Surface Water Puddle
+        const surfaceWater = new THREE.Mesh(new THREE.PlaneGeometry(3.9, 3.9), new THREE.MeshPhysicalMaterial({ color: 0x3498db, transmission: 0.9, opacity: 0.9, transparent: true, side: THREE.DoubleSide }));
+        surfaceWater.rotation.x = -Math.PI / 2; surfaceWater.position.set(-7, 0.05, 0); surfaceWater.visible = false; scene.add(surfaceWater);
+
+        // Leakage Spray
+        const leakSpray = new THREE.Mesh(new THREE.ConeGeometry(0.3, 1, 8), new THREE.MeshBasicMaterial({ color: 0x87cefa, transparent: true, opacity: 0.6, side: THREE.DoubleSide }));
+        leakSpray.position.set(1.5, -0.5, 0); leakSpray.rotation.x = Math.PI; leakSpray.visible = false; scene.add(leakSpray);
+
+        // --- 4. INTERNAL PHYSICS STATE ---
+        let simState = {
+            flowRate: 0,
+            moisture: 60,
+            health: 100,
+            isLoose: false,
+            isBroken: false
+        };
+
+        const alertBanner = document.getElementById('alert-banner');
+
+        // --- 5. RAYCASTER (CLICK TO LOOSEN PIPE) ---
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+        
+        window.addEventListener('click', (event) => {
+            if (simState.isBroken) return; // Can't loosen a broken pipe
+
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            raycaster.setFromCamera(mouse, camera);
+
+            // Check if user clicked the middle pipe
+            const intersects = raycaster.intersectObject(pipeMid);
+            if (intersects.length > 0) {
+                simState.isLoose = !simState.isLoose; // Toggle loose state
+                
+                // Visually sag the pipe
+                pipeMid.position.y = simState.isLoose ? -0.15 : 0; 
+                pipeMid.rotation.z = simState.isLoose ? (Math.PI / 2) + 0.08 : Math.PI / 2;
+                
+                updateVisuals();
+            }
+        });
+
+        // --- 6. PHYSICS LOOP (RUNS EVERY SECOND) ---
+        setInterval(() => {
+            if (simState.isBroken) return; // Stop simulation if broken
+
+            // Moisture Logic: Dry out if flow is 0, soak if flow > 0
+            if (simState.flowRate === 0) {
+                simState.moisture = Math.max(0, simState.moisture - 2);
+            } else {
+                simState.moisture = Math.min(100, simState.moisture + 5);
+            }
+
+            // Pipe Corrosion/Damage Logic: High flow eats away health
+            if (simState.flowRate > 15) {
+                simState.health -= 2; // Fast damage
+            } else if (simState.flowRate > 0) {
+                simState.health -= 0.5; // Slow wear
+            }
+
+            // Pipe Breakage Trigger
+            if (simState.health <= 0 && !simState.isBroken) {
+                simState.isBroken = true;
+                triggerPipeBurst();
+            }
+
+            updateVisuals();
+        }, 1000);
+
+        // Slider Input
+        document.getElementById('sim-pressure').addEventListener('input', (e) => {
+            if (!simState.isBroken) {
+                simState.flowRate = parseFloat(e.target.value);
+                updateVisuals();
+            }
+        });
+
+        // --- 7. UPDATE GRAPHICS BASED ON STATE ---
+        function updateVisuals() {
+            // Update UI Text
+            document.getElementById('ui-flow').innerText = simState.flowRate.toFixed(2);
+            document.getElementById('ui-moisture').innerText = Math.round(simState.moisture);
+            document.getElementById('ui-health').innerText = `${Math.max(0, Math.round(simState.health))}%`;
+
+            let flowRatio = Math.max(0, Math.min(1, simState.flowRate / 30.0));
+            if (valveHandle) valveHandle.rotation.y = THREE.MathUtils.degToRad(flowRatio * 90.0);
+
+            // Visual Leak Logic: Leaks only if pipe is loose AND water is flowing
+            if (simState.isLoose && simState.flowRate > 0) {
+                leakSpray.visible = true;
+                document.getElementById('ui-pressure').innerText = 'LEAKING';
+                document.getElementById('ui-pressure').style.color = '#f39c12';
+            } else {
+                leakSpray.visible = false;
+                document.getElementById('ui-pressure').innerText = 'Normal';
+                document.getElementById('ui-pressure').style.color = '#2ecc71';
+            }
+
+            // Health Visuals (Corrosion)
+            if (simState.health < 50) {
+                pipeMid.material.color.setHex(0xb87333); // Rusted Copper
+                document.getElementById('ui-health').style.color = '#e74c3c';
+            } else {
+                pipeMid.material.color.setHex(0xffffff); // Clean Glass
+                document.getElementById('ui-health').style.color = '#2ecc71';
+            }
+
+            // Moisture Alerts & Visuals
+            if (simState.moisture < 20) {
+                alertBanner.style.display = 'block';
+                alertBanner.style.backgroundColor = 'rgba(231, 76, 60, 0.9)';
+                alertBanner.innerText = '⚠️ CRITICAL: SOIL MOISTURE LOW';
+            } else {
+                alertBanner.style.display = 'none';
+            }
+
+            surfaceWater.visible = simState.moisture > 80;
+
+            // Soil Color Lerp
+            if (soilMesh) {
+                const dry = new THREE.Color(0xd2b48c); 
+                const wet = new THREE.Color(0x3e2723); 
+                soilMesh.material.color.lerpColors(dry, wet, simState.moisture / 100);
+            }
+
+            // Manage inner water transparency based on flow
+            if (simState.flowRate > 0.5) {
+                innerWaterMaterial.opacity = 0.4 + (flowRatio * 0.4);
+                if (!simState.isBroken) waterStreamDrop.material.opacity = 0.4 + (flowRatio * 0.4);
+            } else {
+                innerWaterMaterial.opacity = 0;
+                waterStreamDrop.material.opacity = 0;
+            }
+        }
+
+        function triggerPipeBurst() {
+            alertBanner.style.display = 'block';
+            alertBanner.style.backgroundColor = 'rgba(192, 57, 43, 0.9)';
+            alertBanner.innerText = '🚨 SYSTEM FAILURE: PIPE BURST DETECTED';
+            
+            // Drop the broken pipe visually
+            pipeMid.position.y = -5; // Drop out of view
+            waterMid.opacity = 0; // Water disappears inside the middle pipe
+            waterStreamDrop.material.opacity = 0; // Stops flowing to soil
+            
+            // Massive leak spray
+            leakSpray.visible = true;
+            leakSpray.scale.set(3, 3, 3); // Huge water explosion
+        }
+
+        // --- 8. RENDER LOOP ---
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+
+            waterTexture.offset.y -= (simState.flowRate / 30.0) * 0.05;
+
+            // Jitter for falling stream and leaks
+            if (waterStreamDrop.material.opacity > 0) {
+                waterStreamDrop.scale.set(1, 1, 1).multiplyScalar(0.9 + Math.random() * 0.2);
+            }
+            if (leakSpray.visible) {
+                let baseSize = simState.isBroken ? 3 : 1;
+                leakSpray.scale.set(baseSize + Math.random()*0.3, baseSize + Math.random()*0.5, baseSize + Math.random()*0.3);
+            }
+
             renderer.render(scene, camera);
         }
         animate();
