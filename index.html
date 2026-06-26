@@ -181,7 +181,7 @@
             isLiveMode: true, 
             pressure: 0, 
             flowRate: 0, 
-            moisture: 0, // Starts at 0, waits for sensor data
+            moisture: 0, 
             health: 100, 
             isLoose: false, 
             isBroken: false 
@@ -201,12 +201,11 @@
             sliderLabel.style.color = '#f39c12';
             simState.pressure = parseInt(simSlider.value);
             simState.flowRate = simState.pressure > 0 ? (Math.sqrt(simState.pressure) * 4.5) : 0;
-            // Provide a baseline moisture if switching to manual and it's currently 0
             if(simState.moisture === 0) simState.moisture = 60; 
         }
 
         modeToggle.addEventListener('click', () => {
-            if (modeToggle.classList.contains('mode-error')) return; // Can't toggle if socket is dead
+            if (modeToggle.classList.contains('mode-error')) return;
 
             if (!simState.isLiveMode) {
                 simState.isLiveMode = true;
@@ -215,7 +214,7 @@
                 simSlider.disabled = true;
                 sliderLabel.innerText = 'Override Locked (Live Mode)';
                 sliderLabel.style.color = '#7f8c8d';
-                simState.moisture = 0; // Reset pending sensor data
+                simState.moisture = 0; 
             } else {
                 setManualMode();
             }
@@ -227,7 +226,7 @@
 
         function connectIoT() {
             try {
-                iotSocket = new WebSocket('ws://10.112.86.21:81'); 
+                iotSocket = new WebSocket('ws://10.179.48.21:81'); 
                 
                 iotSocket.onopen = () => {
                     console.log('IoT WebSocket Link Established');
@@ -244,8 +243,8 @@
                 };
 
                 iotSocket.onmessage = function(event) {
-                    lastPingTime = Date.now(); // Update heartbeat
-                    if (!simState.isLiveMode || simState.isBroken) return; 
+                    lastPingTime = Date.now(); 
+                    if (!simState.isLiveMode) return; // FIXED: Removed isBroken check so telemetry still streams
 
                     try {
                         const telemetry = JSON.parse(event.data);
@@ -261,13 +260,13 @@
                         if (telemetry.moisture !== undefined) {
                             simState.moisture = telemetry.moisture; 
                         } else {
-                            simState.moisture = 0; // Explicitly 0 if sensor fails to send data
+                            simState.moisture = 0; 
                         }
                         
                         updateVisuals();
                     } catch (err) {
                         console.error("Payload parse error:", err);
-                        simState.moisture = 0; // Fallback on bad payload
+                        simState.moisture = 0; 
                     }
                 };
             } catch(e) {
@@ -306,12 +305,10 @@
         // --- 8. PHYSICS LOOP ---
         function startSimulation() {
             setInterval(() => {
-                // Heartbeat check: If no data in 5 seconds while in live mode, force manual
                 if (simState.isLiveMode && (Date.now() - lastPingTime > 5000)) {
                     handleConnectionFailure();
                 }
 
-                // If in Manual Mode, calculate proportional moisture
                 if (!simState.isLiveMode) {
                     if (simState.flowRate === 0 || simState.isBroken) {
                         simState.moisture = Math.max(0, simState.moisture - 2); 
@@ -321,7 +318,6 @@
                     }
                 }
 
-                // Virtual Health Simulation degrades regardless of mode if pressure is high
                 if (!simState.isBroken) {
                     if (simState.pressure > 100) {
                         simState.health -= 6; 
@@ -330,7 +326,6 @@
                     }
                 }
 
-                // Burst Trigger
                 if (simState.health <= 0 && !simState.isBroken) {
                     simState.isBroken = true;
                     pipeMid.position.y = -6; 
@@ -342,7 +337,7 @@
         }
 
         simSlider.addEventListener('input', (e) => {
-            if (simState.isLiveMode || simState.isBroken) return;
+            if (simState.isLiveMode) return; // FIXED: Removed isBroken check so user can stop pump
             simState.pressure = parseInt(e.target.value);
             simState.flowRate = simState.pressure > 0 ? (Math.sqrt(simState.pressure) * 4.5) : 0;
             updateVisuals();
@@ -395,7 +390,6 @@
                 soilMesh.material.color.lerpColors(dry, wet, simState.moisture / 100);
             }
 
-            // ALWAYS FULL SOURCE PIPE
             sourceWaterMaterial.opacity = 0.8;
             waterRight.scale.set(1, 1, 1);
             waterRight.position.y = 0;
