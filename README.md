@@ -2,7 +2,7 @@
 
 ## 📖 Overview
 
-**[Project Name]** is an interactive, browser-based 3D Digital Twin application built using **Three.js**. This project bridges the physical and digital worlds by visualizing [describe the physical object/environment, e.g., an industrial smart factory, a commercial HVAC system, a robotic arm] in real-time.
+**Digital Twin-Based Smart Irrigation** is an interactive, browser-based 3D Digital Twin application built using **Three.js**. This project bridges the physical and digital worlds by visualizing [describe the physical object/environment, e.g., an industrial smart factory, a commercial HVAC system, a robotic arm] in real-time.
 
 By integrating live sensor telemetry (IoT data) with a high-fidelity 3D model, this application allows users to monitor performance, simulate scenarios, and detect anomalies visually and intuitively.
 
@@ -19,18 +19,10 @@ By integrating live sensor telemetry (IoT data) with a high-fidelity 3D model, t
 
 * **Core 3D Engine:** [Three.js](https://threejs.org/)
 * **Asset Loading:** GLTFLoader, DRACOLoader
-* **Frontend Framework:** [Vanilla JS / React + React Three Fiber / Vue]
-* **Bundler:** [Vite / Webpack / Parcel]
-* **Real-time Comms:** [Socket.io / MQTT.js]
 
 ## 🚀 Getting Started
 
 Follow these instructions to get a copy of the project up and running on your local machine for development and testing purposes.
-
-### Prerequisites
-
-* [Node.js](https://nodejs.org/) (v16.x or higher)
-* npm or yarn
 
 ### Installation
 
@@ -41,75 +33,20 @@ cd [your-repo-name]
 
 ```
 
+2. **Run the development server:**
+Use the Visual Studio Live Preview or live server for index.html
 
-2. **Install dependencies:**
-```bash
-npm install
-# or
-yarn install
-
-```
-
-
-3. **Set up environment variables:**
-Create a `.env` file in the root directory and add your data stream endpoints:
-```env
-VITE_WEBSOCKET_URL=wss://your-iot-endpoint.com/stream
-VITE_API_BASE_URL=https://your-api.com/v1
-
-```
-
-
-4. **Run the development server:**
-```bash
-npm run dev
-# or
-yarn dev
-
-```
-
-
-5. **Open your browser:**
-Navigate to `http://localhost:5173` (or the port specified by your bundler) to view the application.
+3. **Open your browser:**
+Navigate to `http://localhost:3000` (or the port specified by your bundler) to view the application.
 
 ## 📂 Project Structure
 
 ```text
-├── public/
-│   ├── models/           # GLTF/GLB models, textures, and Draco decoders
-│   └── favicon.ico
-├── src/
-│   ├── scene/            # Three.js core logic (Scene, Camera, Renderer)
-│   ├── loaders/          # Model loading and material configuration
-│   ├── controls/         # User interaction (Raycaster, OrbitControls)
-│   ├── data/             # WebSocket/MQTT clients and state management
-│   ├── ui/               # HTML/CSS overlays or React/Vue components
-│   └── main.js           # Application entry point
-├── .env.example          # Example environment variables
-├── package.json
+├── models           # GLTF/GLB models, textures, and Draco decoders
+├── index.html
 └── README.md
 
 ```
-
-## 🔌 Connecting to Data Streams
-
-To map external data to the 3D model, locate the `data/streamController.js` file. The application expects incoming data payloads in the following JSON format:
-
-```json
-{
-  "deviceId": "motor_block_01",
-  "timestamp": "2026-07-02T12:00:00Z",
-  "metrics": {
-    "temperature": 85.5,
-    "rpm": 1200,
-    "status": "operational"
-  }
-}
-
-```
-
-The application uses the `deviceId` to traverse the Three.js Scene Graph and update the corresponding mesh's material or rotation based on the incoming metrics.
-
 ## 🤝 Contributing
 
 Contributions make the open-source community such an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated**.
