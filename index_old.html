@@ -49,30 +49,12 @@
         }
         .flash { animation: pulse 1s infinite; }
         @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
-
-        #valve-toast {
-            position: absolute; bottom: 20px; right: 20px;
-            background: rgba(20, 20, 20, 0.9); padding: 15px 25px;
-            border-radius: 8px; font-family: monospace; font-size: 14px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.6); z-index: 100;
-            transition: all 0.3s ease; display: flex; align-items: center; gap: 10px;
-        }
-        #toast-indicator { width: 10px; height: 10px; border-radius: 50%; }
-        #toast-text { color: #ffffff; font-weight: bold; }
-
-        #spatial-valve-label {
-            position: absolute; z-index: 5; transform: translate(-50%, -100%);
-            color: #ffffff; background: rgba(0, 0, 0, 0.85); padding: 4px 10px;
-            border-radius: 4px; font-family: monospace; font-size: 12px; font-weight: bold;
-            pointer-events: none; border-bottom: 2px solid #e74c3c;
-            letter-spacing: 0.5px; white-space: nowrap; transition: color 0.2s ease, border-color 0.2s ease;
-        }
     </style>
     <script type="importmap">
         {
             "imports": {
-                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
             }
         }
     </script>
@@ -91,7 +73,6 @@
         <div class="data-field">Pump Pressure: <span id="ui-psi" class="value">0</span> PSI</div>
         <div class="data-field">Flow Rate: <span id="ui-flow" class="value">0.00</span> L/m</div>
         <div class="data-field">Soil Moisture: <span id="ui-moisture" class="value">0</span>%</div>
-        <div class="data-field">Valve Position: <span id="ui-valve" class="value">UNKNOWN</span></div>
         <div class="data-field" style="color: #bdc3c7;">Virtual PVC Health: <span id="ui-health" class="value" style="color: #2ecc71;">100%</span></div>
         <div class="data-field" style="color: #bdc3c7;">System Status: <span id="ui-status" class="value">Normal</span></div>
         
@@ -101,17 +82,7 @@
             <span id="slider-label" style="color: #7f8c8d;">Override Locked (Live Mode)</span>
             <input type="range" id="sim-pressure" min="0" max="120" step="1" value="0" disabled>
         </div>
-        
-        <!-- UPDATED: Permanently Visible Toggle Button -->
-        <button id="alarm-mute-btn" style="width: 100%; margin-top: 15px; padding: 10px; background: #2c3e50; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; letter-spacing: 1px;">BUZZER: INACTIVE (CLICK TO ON)</button>
     </div>
-
-    <div id="valve-toast">
-        <span id="toast-indicator"></span>
-        <span id="toast-text">VALVE INITIALIZING</span>
-    </div>
-
-    <div id="spatial-valve-label">VALVE: UNKNOWN</div>
 
     <script type="module">
         import * as THREE from 'three';
@@ -119,30 +90,7 @@
         import { FBXLoader } from 'three/addons/loaders/FBXLoader.js'; 
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-        // --- 1. GLOBAL VARIABLE INITIALIZATION ---
-        let simState = { 
-            isLiveMode: true, 
-            pressure: 0, 
-            flowRate: 0, 
-            moisture: 0, 
-            health: 100, 
-            isLoose: false, 
-            isBroken: false,
-            isValveClosed: true 
-        };
-
-        let lastPingTime = Date.now(); 
-        let iotSocket = null;
-        let valveRotatableParts = []; 
-        let soilMesh, waterStreamDrop, pipeMid, waterLeft, waterMid, waterRight, voidWaterfall; 
-        
-        const valveTargetWorldPos = new THREE.Vector3(1.80, 0.80, 0.00); 
-        const alertBanner = document.getElementById('alert-banner');
-        const modeToggle = document.getElementById('mode-toggle');
-        const simSlider = document.getElementById('sim-pressure');
-        const sliderLabel = document.getElementById('slider-label');
-
-        // --- 2. CORE SCENE ARCHITECTURE ---
+        // --- 1. CORE ENVIRONMENT ---
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0x141414);
         const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -157,7 +105,7 @@
         dirLight.position.set(10, 20, 10);
         scene.add(dirLight);
 
-        // --- 3. TEXTURES & MATERIALS ---
+        // --- 2. TEXTURES & MATERIALS ---
         function createWaterTexture() {
             const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 256;
             const ctx = canvas.getContext('2d');
@@ -169,9 +117,10 @@
         const waterTexture = createWaterTexture();
         const glassPipeMaterial = new THREE.MeshPhysicalMaterial({ color: 0xffffff, opacity: 0.25, transparent: true, depthWrite: false, side: THREE.DoubleSide });
         const innerWaterMaterial = new THREE.MeshBasicMaterial({ map: waterTexture, color: 0x3498db, transparent: true, opacity: 0.0 });
-        const sourceWaterMaterial = new THREE.MeshBasicMaterial({ map: waterTexture, color: 0x3498db, transparent: true, opacity: 0.0 });
+        const sourceWaterMaterial = new THREE.MeshBasicMaterial({ map: waterTexture, color: 0x3498db, transparent: true, opacity: 0.8 });
 
-        // --- 4. ENVIRONMENT MODEL BUILD ASSEMBLY ---
+        // --- 3. MODEL ASSEMBLY ---
+        let valveHandle, soilMesh, waterStreamDrop, pipeMid, waterLeft, waterRight, voidWaterfall;
         const loadingManager = new THREE.LoadingManager();
         loadingManager.onLoad = () => {
             document.getElementById('loading-screen').style.opacity = '0';
@@ -181,41 +130,32 @@
         const objLoader = new OBJLoader(loadingManager);
         const fbxLoader = new FBXLoader(loadingManager);
 
-        const pipeRight = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 4), glassPipeMaterial); pipeRight.rotation.z = Math.PI / 2; pipeRight.position.set(4, 0, 0); scene.add(pipeRight);
-        waterRight = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 4), sourceWaterMaterial); waterRight.rotation.z = Math.PI / 2; waterRight.position.set(4, 0, 0); scene.add(waterRight);
+        const pipeRight = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 4), glassPipeMaterial); pipeRight.rotation.z = Math.PI / 2; pipeRight.position.set(4, 0, 0); scene.add(pipeRight);
+        waterRight = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 4), sourceWaterMaterial); waterRight.rotation.z = Math.PI / 2; waterRight.position.set(4, 0, 0); scene.add(waterRight);
 
-        // Load new mechanical valve model geometry hierarchy with custom reference texturing
-        fbxLoader.load('models/valve.fbx', (fbx) => {
-            fbx.scale.set(0.00018, 0.00018, 0.00018); fbx.position.set(1.80, 0.00, 0.00); fbx.rotation.y = 0; scene.add(fbx);
+        fbxLoader.load('models/ball_valve.fbx', (fbx) => {
+            fbx.scale.set(0.0001, 0.0001, 0.0001); fbx.position.set(1.80, 0.00, 0.00); fbx.rotation.y = 3.14; scene.add(fbx);
             fbx.traverse((child) => {
                 if (child.isMesh) {
-                    const nameLower = child.name.toLowerCase();
-                    const isStatic = nameLower.includes('2150291') || nameLower.includes('camera') || nameLower.includes('light');
-                    
-                    if (isStatic) {
-                        // Brass/Gold alloy body casing texturing setup
-                        child.material = new THREE.MeshStandardMaterial({ color: 0xd4af37, roughness: 0.3, metalness: 0.8 });
-                    } else {
-                        // Industrial high-contrast blue handle material setup
-                        child.material = new THREE.MeshStandardMaterial({ color: 0x3b5998, roughness: 0.4, metalness: 0.2 });
-                        valveRotatableParts.push(child); 
-                    }
+                    child.material = new THREE.MeshStandardMaterial({ color: 0x7f8c8d, roughness: 0.4 });
+                    if (child.name.includes('Valve') || child.name.includes('Top')) valveHandle = child; 
+                    else if (!valveHandle) valveHandle = child; 
                 }
             });
         });
 
         objLoader.load('models/flow_sensor.obj', (obj) => {
-            obj.scale.set(0.018, 0.018, 0.018); obj.position.set(-1.2, -0.6, 0.24); obj.rotation.y = 3.14; scene.add(obj);
+            obj.scale.set(0.01, 0.01, 0.01); obj.position.set(-1.45, -0.30, 0.15); obj.rotation.y = 3.14; scene.add(obj);
             obj.traverse((child) => { if (child.isMesh) { child.geometry.computeVertexNormals(); child.material = new THREE.MeshStandardMaterial({ color: 0x2980b9, roughness: 0.3 }); }});
-        });
+        }, undefined, () => console.log('Sensor missing, skipping.'));
 
-        pipeMid = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 3), glassPipeMaterial.clone()); pipeMid.rotation.z = Math.PI / 2; pipeMid.position.set(0, 0, 0); scene.add(pipeMid);
-        waterMid = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 3), innerWaterMaterial); waterMid.rotation.z = Math.PI / 2; waterMid.position.set(0, 0, 0); scene.add(waterMid);
+        pipeMid = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 3), glassPipeMaterial.clone()); pipeMid.rotation.z = Math.PI / 2; pipeMid.position.set(0, 0, 0); scene.add(pipeMid);
+        const waterMid = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 3), innerWaterMaterial); waterMid.rotation.z = Math.PI / 2; waterMid.position.set(0, 0, 0); scene.add(waterMid);
 
-        const pipeLeft = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 4), glassPipeMaterial); pipeLeft.rotation.z = Math.PI / 2; pipeLeft.position.set(-4, 0, 0); scene.add(pipeLeft);
-        waterLeft = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 4), innerWaterMaterial.clone()); waterLeft.rotation.z = Math.PI / 2; waterLeft.position.set(-4, 0, 0); scene.add(waterLeft);
+        const pipeLeft = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 4), glassPipeMaterial); pipeLeft.rotation.z = Math.PI / 2; pipeLeft.position.set(-4, 0, 0); scene.add(pipeLeft);
+        waterLeft = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 4), innerWaterMaterial.clone()); waterLeft.rotation.z = Math.PI / 2; waterLeft.position.set(-4, 0, 0); scene.add(waterLeft);
 
-        waterStreamDrop = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.08, 1.2).translate(0,-0.6,0), new THREE.MeshBasicMaterial({ color: 0x3498db, transparent: true, opacity: 0.0 }));
+        waterStreamDrop = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.12, 1.2).translate(0,-0.6,0), new THREE.MeshBasicMaterial({ color: 0x3498db, transparent: true, opacity: 0.0 }));
         waterStreamDrop.position.set(-6, 0, 0); scene.add(waterStreamDrop);
         
         const container = new THREE.Mesh(new THREE.BoxGeometry(4, 2, 4), new THREE.MeshStandardMaterial({ color: 0x34495e })); container.position.set(-7, -1, 0); scene.add(container);
@@ -233,9 +173,25 @@
         objLoader.load('models/soil_moisture.obj', (obj) => {
             obj.scale.set(20, 20, 20); obj.position.set(-6.00, -0.5, 0.00); scene.add(obj);
             obj.traverse((child) => { if (child.isMesh) { child.geometry.computeVertexNormals(); child.material = new THREE.MeshStandardMaterial({ color: 0x95a5a6, roughness: 0.5 }); }});
-        });
+        }, undefined, () => console.log('Sensor missing, skipping.'));
 
-        // --- 5. SYSTEM OVERRIDES MANUAL TOGGLES ---
+
+        // --- 4. INTERNAL PHYSICS & SYSTEM STATE ---
+        let simState = { 
+            isLiveMode: true, 
+            pressure: 0, 
+            flowRate: 0, 
+            moisture: 0, 
+            health: 100, 
+            isLoose: false, 
+            isBroken: false 
+        };
+        const alertBanner = document.getElementById('alert-banner');
+        const modeToggle = document.getElementById('mode-toggle');
+        const simSlider = document.getElementById('sim-pressure');
+        const sliderLabel = document.getElementById('slider-label');
+
+        // --- 5. SYSTEM MODE TOGGLE ---
         function setManualMode() {
             simState.isLiveMode = false;
             modeToggle.className = 'mode-badge mode-manual';
@@ -245,12 +201,12 @@
             sliderLabel.style.color = '#f39c12';
             simState.pressure = parseInt(simSlider.value);
             simState.flowRate = simState.pressure > 0 ? (Math.sqrt(simState.pressure) * 4.5) : 0;
-            simState.isValveClosed = simState.flowRate > 0 ? false : true; 
             if(simState.moisture === 0) simState.moisture = 60; 
         }
 
         modeToggle.addEventListener('click', () => {
             if (modeToggle.classList.contains('mode-error')) return;
+
             if (!simState.isLiveMode) {
                 simState.isLiveMode = true;
                 modeToggle.className = 'mode-badge mode-live';
@@ -264,21 +220,35 @@
             }
         });
 
-        // --- 6. HARDWARE STREAM (WEBSOCKETS) ---
+        // --- 6. IOT WEBSOCKET CONNECTION WITH FALLBACK ---
+        let iotSocket;
+        let lastPingTime = Date.now();
+
         function connectIoT() {
             try {
-                iotSocket = new WebSocket('ws://10.238.66.21:81'); 
-                iotSocket.onopen = () => { console.log('IoT WebSocket Link Established'); lastPingTime = Date.now(); };
-                iotSocket.onerror = (err) => { console.error('IoT WebSocket Error:', err); handleConnectionFailure(); };
-                iotSocket.onclose = () => { handleConnectionFailure(); };
+                iotSocket = new WebSocket('ws://10.179.48.21:81'); 
+                
+                iotSocket.onopen = () => {
+                    console.log('IoT WebSocket Link Established');
+                    lastPingTime = Date.now();
+                };
+
+                iotSocket.onerror = (err) => {
+                    console.error('IoT WebSocket Error:', err);
+                    handleConnectionFailure();
+                };
+
+                iotSocket.onclose = () => {
+                    handleConnectionFailure();
+                };
+
                 iotSocket.onmessage = function(event) {
                     lastPingTime = Date.now(); 
-                    if (!simState.isLiveMode) return; 
+                    if (!simState.isLiveMode) return; // FIXED: Removed isBroken check so telemetry still streams
+
                     try {
                         const telemetry = JSON.parse(event.data);
-                        if (telemetry.isValveClosed !== undefined) { simState.isValveClosed = telemetry.isValveClosed; } 
-                        else if (telemetry.valveAngle !== undefined) { simState.isValveClosed = (telemetry.valveAngle === 0); }
-
+                        
                         if (telemetry.flow !== undefined) {
                             simState.flowRate = telemetry.flow;
                             simState.pressure = Math.round(Math.pow(telemetry.flow / 4.5, 2)); 
@@ -286,15 +256,26 @@
                             simState.pressure = telemetry.pressure;
                             simState.flowRate = simState.pressure > 0 ? (Math.sqrt(simState.pressure) * 4.5) : 0;
                         }
-                        if (telemetry.moisture !== undefined) { simState.moisture = telemetry.moisture; }
+
+                        if (telemetry.moisture !== undefined) {
+                            simState.moisture = telemetry.moisture; 
+                        } else {
+                            simState.moisture = 0; 
+                        }
+                        
                         updateVisuals();
-                    } catch (err) { console.error("Payload parse error:", err); }
+                    } catch (err) {
+                        console.error("Payload parse error:", err);
+                        simState.moisture = 0; 
+                    }
                 };
-            } catch(e) { handleConnectionFailure(); }
+            } catch(e) {
+                handleConnectionFailure();
+            }
         }
 
         function handleConnectionFailure() {
-            console.log("IoT offline. Forcing Manual Mode.");
+            console.log("IoT connection lost. Forcing Manual Mode.");
             modeToggle.className = 'mode-badge mode-error';
             modeToggle.innerText = 'IoT Offline';
             setManualMode();
@@ -302,44 +283,16 @@
 
         connectIoT();
 
-        // --- UPDATED: BIDIRECTIONAL ALARM CONTROL LOGIC ---
-        let manualBuzzerState = false;
-        let isHardwareAlarmActive = false;
-        const alarmBtn = document.getElementById('alarm-mute-btn');
-
-        // Manual button click handler to toggle the buzzer state arbitrarily
-        alarmBtn.addEventListener('click', () => {
-            manualBuzzerState = !manualBuzzerState;
-            updateBuzzerUI();
-            sendBuzzerCommand(manualBuzzerState);
-        });
-
-        function updateBuzzerUI() {
-            if (manualBuzzerState || isHardwareAlarmActive) {
-                alarmBtn.innerText = "BUZZER: ACTIVE (CLICK TO OFF)";
-                alarmBtn.style.background = "#e74c3c"; // Crimson active state
-            } else {
-                alarmBtn.innerText = "BUZZER: INACTIVE (CLICK TO ON)";
-                alarmBtn.style.background = "#2c3e50"; // Neutral slate dark state
-            }
-        }
-
-        // Function to push commands down to the hardware
-        function sendBuzzerCommand(turnOn) {
-            if (iotSocket && iotSocket.readyState === WebSocket.OPEN) {
-                const command = JSON.stringify({ buzzer: turnOn });
-                iotSocket.send(command);
-            }
-        }
-
-        // --- 7. RAYCAST DETACH PIPELINE ---
+        // --- 7. RAYCASTER (CLICK TO LOOSEN PIPE) ---
         const raycaster = new THREE.Raycaster();
         const mouse = new THREE.Vector2();
+        
         window.addEventListener('click', (event) => {
             if (simState.isBroken) return;
             mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
             mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
             raycaster.setFromCamera(mouse, camera);
+
             const intersects = raycaster.intersectObject(pipeMid);
             if (intersects.length > 0) {
                 simState.isLoose = !simState.isLoose;
@@ -349,78 +302,58 @@
             }
         });
 
-        // --- 8. DEGRADATION RUNTIME ENGINE ---
+        // --- 8. PHYSICS LOOP ---
         function startSimulation() {
             setInterval(() => {
-                if (simState.isLiveMode && (Date.now() - lastPingTime > 5000)) { handleConnectionFailure(); }
+                if (simState.isLiveMode && (Date.now() - lastPingTime > 5000)) {
+                    handleConnectionFailure();
+                }
+
                 if (!simState.isLiveMode) {
-                    if (simState.flowRate === 0 || simState.isBroken) { simState.moisture = Math.max(0, simState.moisture - 2); } 
-                    else { simState.moisture = Math.min(100, simState.moisture + (simState.flowRate * 0.15)); }
+                    if (simState.flowRate === 0 || simState.isBroken) {
+                        simState.moisture = Math.max(0, simState.moisture - 2); 
+                    } else {
+                        let soakRate = simState.flowRate * 0.15; 
+                        simState.moisture = Math.min(100, simState.moisture + soakRate); 
+                    }
                 }
+
                 if (!simState.isBroken) {
-                    if (simState.pressure > 100) { simState.health -= 6; } 
-                    else if (simState.pressure > 70) { simState.health -= 1.5; }
+                    if (simState.pressure > 100) {
+                        simState.health -= 6; 
+                    } else if (simState.pressure > 70) {
+                        simState.health -= 1.5; 
+                    }
                 }
+
                 if (simState.health <= 0 && !simState.isBroken) {
                     simState.isBroken = true;
                     pipeMid.position.y = -6; 
+                    waterMid.opacity = 0; 
                 }
+
                 updateVisuals();
             }, 1000);
         }
 
         simSlider.addEventListener('input', (e) => {
-            if (simState.isLiveMode) return; 
+            if (simState.isLiveMode) return; // FIXED: Removed isBroken check so user can stop pump
             simState.pressure = parseInt(e.target.value);
             simState.flowRate = simState.pressure > 0 ? (Math.sqrt(simState.pressure) * 4.5) : 0;
-            simState.isValveClosed = simState.flowRate > 0 ? false : true;
             updateVisuals();
         });
 
         // --- 9. THE MASTER VISUAL CONTROLLER ---
         function updateVisuals() {
-            if (!simState || !waterRight || !waterMid || !waterLeft) return;
-
             document.getElementById('ui-psi').innerText = simState.pressure;
             document.getElementById('ui-flow').innerText = simState.flowRate.toFixed(2);
             document.getElementById('ui-moisture').innerText = Math.round(simState.moisture);
             document.getElementById('ui-health').innerText = `${Math.max(0, Math.round(simState.health))}%`;
-            
-            const uiValve = document.getElementById('ui-valve');
-            const toastText = document.getElementById('toast-text');
-            const toastIndicator = document.getElementById('toast-indicator');
-            const toastBorder = document.getElementById('valve-toast');
-            const spatialLabel = document.getElementById('spatial-valve-label');
 
             const MAX_THEORETICAL_FLOW = Math.sqrt(120) * 4.5;
             let flowRatio = Math.max(0, Math.min(1, simState.flowRate / MAX_THEORETICAL_FLOW));
-
-            if(simState.isValveClosed) {
-                uiValve.innerText = "CLOSED"; uiValve.style.color = "#e74c3c";
-                toastText.innerText = "VALVE STATE: CLOSED"; toastIndicator.style.backgroundColor = "#e74c3c"; toastBorder.style.border = "1px solid #e74c3c";
-                spatialLabel.innerText = "VALVE: CLOSED"; spatialLabel.style.color = "#ff4d4d"; spatialLabel.style.borderBottomColor = "#e74c3c";
-            } else {
-                let activeStateText = simState.flowRate > 0 ? "OPEN (Flowing)" : "OPEN (Dry)";
-                uiValve.innerText = activeStateText; uiValve.style.color = "#2ecc71";
-                toastText.innerText = `VALVE STATE: ${activeStateText.toUpperCase()}`; toastIndicator.style.backgroundColor = "#2ecc71"; toastBorder.style.border = "1px solid #2ecc71";
-                spatialLabel.innerText = `VALVE: ${simState.flowRate > 0 ? "OPEN (IN-LINE FLOW)" : "OPEN (NO MEDIUM)"}`; spatialLabel.style.color = "#2ecc71"; spatialLabel.style.borderBottomColor = "#2ecc71";
-            }
             
-            // --- UPDATED ROTATION POLARITY FOR NEW ASSET CONFIGURATION ---
-            // Open (parallel pointing right inline down the pipe alignment) = 0 degrees
-            // Closed (perpendicular facing directly forward out to the user) = 90 degrees
-            if (valveRotatableParts.length > 0) {
-                let targetAngle = 90.0; 
-                
-                if (simState.flowRate > 0) {
-                    targetAngle = 90.0 - (flowRatio * 90.0); 
-                } else {
-                    targetAngle = simState.isValveClosed ? 90.0 : 0.0;
-                }
-                
-                const radAngle = THREE.MathUtils.degToRad(targetAngle);
-                valveRotatableParts.forEach(part => { part.rotation.y = -radAngle; });
-            }
+            if (valveHandle) valveHandle.rotation.y = THREE.MathUtils.degToRad(flowRatio * 90.0);
 
             if (simState.health < 50 && !simState.isBroken) {
                 pipeMid.material.color.setHex(0xb87333); document.getElementById('ui-health').style.color = '#e74c3c';
@@ -429,7 +362,8 @@
             }
 
             if (simState.isBroken) {
-                leakSpray.visible = simState.pressure > 0; leakSpray.scale.set(2, 2, 2); voidWaterfall.material.opacity = simState.pressure > 0 ? 0.9 : 0; 
+                leakSpray.visible = simState.pressure > 0; leakSpray.scale.set(2, 2, 2); 
+                voidWaterfall.material.opacity = simState.pressure > 0 ? 0.9 : 0; 
                 document.getElementById('ui-status').innerText = 'CATASTROPHIC LOSS'; document.getElementById('ui-status').style.color = '#e74c3c';
             } else if (simState.isLoose && simState.pressure > 0) {
                 leakSpray.visible = true; leakSpray.scale.set(1, 1, 1); voidWaterfall.material.opacity = 0; 
@@ -441,98 +375,66 @@
                 else { document.getElementById('ui-status').innerText = 'Normal'; document.getElementById('ui-status').style.color = '#2ecc71'; }
             }
 
-            // --- UPDATED: AUTOMATED SAFETY ALARM LOGIC ---
-            let safetyThreatDetected = simState.isBroken || simState.moisture < 20;
-
-            if (simState.isBroken) { 
-                alertBanner.style.display = 'block'; 
-                alertBanner.style.backgroundColor = 'rgba(192, 57, 43, 0.9)'; 
-                alertBanner.innerText = '🚨 SYSTEM FAILURE: PIPE BURST DETECTED'; 
-            } else if (simState.moisture < 20) { 
-                alertBanner.style.display = 'block'; 
-                alertBanner.style.backgroundColor = 'rgba(231, 76, 60, 0.9)'; 
-                alertBanner.innerText = '⚠️ CRITICAL: SOIL MOISTURE LOW'; 
-            } else { 
-                alertBanner.style.display = 'none'; 
-            }
-
-            // If a physical safety hazard is detected, force the buzzer on automatically
-            if (safetyThreatDetected) {
-                if (!isHardwareAlarmActive) {
-                    isHardwareAlarmActive = true;
-                    sendBuzzerCommand(true);
-                    updateBuzzerUI();
-                }
+            if (simState.isBroken) {
+                alertBanner.style.display = 'block'; alertBanner.style.backgroundColor = 'rgba(192, 57, 43, 0.9)'; alertBanner.innerText = '🚨 SYSTEM FAILURE: PIPE BURST DETECTED';
+            } else if (simState.moisture < 20) {
+                alertBanner.style.display = 'block'; alertBanner.style.backgroundColor = 'rgba(231, 76, 60, 0.9)'; alertBanner.innerText = '⚠️ CRITICAL: SOIL MOISTURE LOW';
             } else {
-                // When danger passes, clear the automated flag and return to manual state
-                if (isHardwareAlarmActive) {
-                    isHardwareAlarmActive = false;
-                    sendBuzzerCommand(manualBuzzerState); // Fall back to whatever the user set manually
-                    updateBuzzerUI();
-                }
+                alertBanner.style.display = 'none';
             }
 
             surfaceWater.visible = simState.moisture > 80;
-            if (soilMesh) { const dry = new THREE.Color(0xd2b48c); const wet = new THREE.Color(0x3e2723); soilMesh.material.color.lerpColors(dry, wet, simState.moisture / 100); }
 
-            // --- WATER SCALING AND LOGICAL POSITION CONTINUITY ---
-            // --- FIXED WATER SCALING & PERFECT POSITION CONTINUITY ---
+            if (soilMesh) {
+                const dry = new THREE.Color(0xd2b48c); const wet = new THREE.Color(0x3e2723); 
+                soilMesh.material.color.lerpColors(dry, wet, simState.moisture / 100);
+            }
+
+            sourceWaterMaterial.opacity = 0.8;
+            waterRight.scale.set(1, 1, 1);
+            waterRight.position.y = 0;
+
             let waterScale = 0.15 + (flowRatio * 0.85); 
+            let waterYOffset = -0.18 + (0.18 * waterScale); 
 
             if (simState.flowRate > 0) { 
                 if (!simState.isBroken) {
                     innerWaterMaterial.opacity = 0.5 + (flowRatio * 0.4);
-                    sourceWaterMaterial.opacity = 0.8;
-
-                    // CORRECTED: Scale X and Z (radial thickness) uniformly, keep Y (length) at 1
-                    waterRight.scale.set(1, 1, 1);
-                    waterMid.scale.set(waterScale, 1, waterScale); 
-                    waterLeft.scale.set(waterScale, 1, waterScale);
-
-                    // Re-align absolute positions to center within the 0.14 radius glass outer walls
-                    waterRight.position.set(4, 0, 0);
-                    waterMid.position.set(0, simState.isLoose ? -0.2 : 0.0, 0);
+                    waterLeft.material.opacity = 0.5 + (flowRatio * 0.4);
+                    
+                    waterMid.scale.set(waterScale, 1, waterScale);
+                    waterMid.position.y = simState.isLoose ? -0.2 + waterYOffset : waterYOffset;
                     waterMid.rotation.z = simState.isLoose ? (Math.PI / 2) + 0.1 : Math.PI / 2;
-                    waterLeft.position.set(-4, 0, 0);
+
+                    waterLeft.scale.set(waterScale, 1, waterScale);
+                    waterLeft.position.y = waterYOffset;
 
                     let streamThickness = 0.2 + (flowRatio * 0.8);
                     waterStreamDrop.scale.set(streamThickness, 1, streamThickness);
                     waterStreamDrop.material.opacity = 0.5 + (flowRatio * 0.4);
                 } else {
-                    innerWaterMaterial.opacity = 0; sourceWaterMaterial.opacity = 0; waterStreamDrop.material.opacity = 0; 
-                    if(waterMid) waterMid.opacity = 0;
+                    innerWaterMaterial.opacity = 0; waterLeft.material.opacity = 0; waterStreamDrop.material.opacity = 0; 
                 }
             } else {
-                innerWaterMaterial.opacity = 0; 
-                sourceWaterMaterial.opacity = 0; 
-                waterStreamDrop.material.opacity = 0;
+                innerWaterMaterial.opacity = 0; waterLeft.material.opacity = 0; waterStreamDrop.material.opacity = 0;
             }
         }
 
-        // --- 10. SPATIAL HUD POSITION PROJECTION ---
-        function updateSpatialLabelPosition() {
-            const spatialLabel = document.getElementById('spatial-valve-label');
-            if (!spatialLabel) return;
-            const tempV3 = valveTargetWorldPos.clone();
-            tempV3.project(camera);
-            if (tempV3.z > 1) { spatialLabel.style.display = 'none'; return; } 
-            else { spatialLabel.style.display = 'block'; }
-            const xPixelPos = (tempV3.x * .5 + .5) * window.innerWidth;
-            const yPixelPos = (tempV3.y * -.5 + .5) * window.innerHeight;
-            spatialLabel.style.left = `${xPixelPos}px`;
-            spatialLabel.style.top = `${yPixelPos}px`;
-        }
-
-        // --- 11. RUNTIME RAF ANIMATION LOOP ---
         function animate() {
-            requestAnimationFrame(animate); 
-            controls.update();
-            updateSpatialLabelPosition();
+            requestAnimationFrame(animate); controls.update();
+            waterTexture.offset.y -= (simState.flowRate * 0.008); 
 
-            if (simState.flowRate > 0) { waterTexture.offset.y -= (simState.flowRate * 0.008); }
-            if (waterStreamDrop.material.opacity > 0) { const currentThickness = waterStreamDrop.scale.x; waterStreamDrop.scale.set(currentThickness, 1, currentThickness).multiplyScalar(0.9 + Math.random() * 0.2); }
-            if (voidWaterfall.material.opacity > 0) { voidWaterfall.scale.set(1, 1, 1).multiplyScalar(0.95 + Math.random() * 0.1); }
-            if (leakSpray.visible) { let baseSize = simState.isBroken ? 2 : 1; leakSpray.scale.set(baseSize + Math.random()*0.3, baseSize + Math.random()*0.5, baseSize + Math.random()*0.3); }
+            if (waterStreamDrop.material.opacity > 0) {
+                const currentThickness = waterStreamDrop.scale.x; 
+                waterStreamDrop.scale.set(currentThickness, 1, currentThickness).multiplyScalar(0.9 + Math.random() * 0.2);
+            }
+            if (voidWaterfall.material.opacity > 0) {
+                voidWaterfall.scale.set(1, 1, 1).multiplyScalar(0.95 + Math.random() * 0.1);
+            }
+            if (leakSpray.visible) {
+                let baseSize = simState.isBroken ? 2 : 1;
+                leakSpray.scale.set(baseSize + Math.random()*0.3, baseSize + Math.random()*0.5, baseSize + Math.random()*0.3);
+            }
             renderer.render(scene, camera);
         }
         animate();
